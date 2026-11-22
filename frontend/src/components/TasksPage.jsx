@@ -2,7 +2,12 @@ import { useState } from 'react'
 import { api } from '../api.js'
 import { usePoll } from '../usePoll.js'
 import JobsTable, { ago } from './JobsTable.jsx'
+import RunTaskDialog from './RunTaskDialog.jsx'
 import TaskForm from './TaskForm.jsx'
+
+/** First meaningful line of a script (skips blank lines and comments) for the task list. */
+const firstLine = (code = '') =>
+  code.split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#')) || code.split('\n')[0]
 
 const fmtInterval = (s) =>
   s % 3600 === 0 ? `${s / 3600}h` : s % 60 === 0 ? `${s / 60}m` : `${s}s`
@@ -13,6 +18,7 @@ export default function TasksPage({ onSelectJob, selectedJob }) {
   const [editing, setEditing] = useState(null)
   const [viewing, setViewing] = useState(null)
   const [flash, setFlash] = useState(null)
+  const [prompting, setPrompting] = useState(null)  // code task waiting for its input values
   const reload = () => setRefresh((r) => r + 1)
 
   const act = async (fn, ok) => {
@@ -26,11 +32,20 @@ export default function TasksPage({ onSelectJob, selectedJob }) {
     }
   }
 
-  const run = (t) => act(async () => {
-    const job = await api.runTask(t.name, {})
+  const started = (t, job) => {
+    setFlash({ ok: true, text: `Started “${t.name}”` })
     setViewing(t.name)
     onSelectJob(job.id)
-  }, `Started “${t.name}”`)
+    reload()
+  }
+
+  const run = (t) => {
+    if (t.handler === 'run_code' && t.default_payload.variables?.length) {
+      setPrompting(t)  // ask for input variables first
+      return
+    }
+    act(async () => started(t, await api.runTask(t.name, {})))
+  }
 
   const remove = (t) => {
     if (!confirm(`Delete task “${t.name}”? Its past runs stay in the job history.`)) return
@@ -75,7 +90,15 @@ export default function TasksPage({ onSelectJob, selectedJob }) {
                       {t.description && <div className="muted small wrap">{t.description}</div>}
                     </td>
                     <td>
-                      <code>{t.handler}</code>
+                      {t.handler === 'run_code' ? (
+                        <>
+                          <span className={`pill lang-${t.default_payload.language}`}>{t.default_payload.language}</span>
+                          <div className="muted small wrap mono">{firstLine(t.default_payload.code)}</div>
+                          {t.default_payload.variables?.length > 0 && (
+                            <div className="muted small wrap">inputs: {t.default_payload.variables.map((v) => v.name).join(', ')}</div>
+                          )}
+                        </>
+                      ) : <code>{t.handler}</code>}
                       {t.handler === 'http_request' && (
                         <div className="muted small wrap">{t.default_payload.method} {t.default_payload.url}</div>
                       )}
@@ -113,6 +136,11 @@ export default function TasksPage({ onSelectJob, selectedJob }) {
             </table>
           )}
         </section>
+
+        {prompting && (
+          <RunTaskDialog task={prompting} onClose={() => setPrompting(null)}
+                         onStarted={(job) => { const t = prompting; setPrompting(null); started(t, job) }} />
+        )}
 
         {viewing && (
           <JobsTable task={viewing} title={`Runs of “${viewing}”`} refreshKey={refresh}

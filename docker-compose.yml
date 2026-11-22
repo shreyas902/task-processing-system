@@ -54,6 +54,11 @@ services:
   worker:
     <<: *app
     command: ["python", "-m", "app.worker"]
+    environment:
+      <<: *env
+      RUNNER_URL: http://runner:9000
+      RUNNER_TOKEN: ${RUNNER_TOKEN:-change-me-runner-token}
+    networks: [default, sandbox]                       # the only service that can reach the runner
     stop_grace_period: 40s                             # graceful shutdown lets running jobs finish
     deploy:
       replicas: ${WORKERS:-2}
@@ -66,6 +71,39 @@ services:
     build: ./frontend
     ports: ["8080:80"]
     depends_on: [api]
+
+  # Executes user Python/shell code. Deliberately isolated:
+  #  - only on the internal "sandbox" network: cannot reach Postgres, Redis, RabbitMQ or the internet
+  #  - no database/broker credentials in its environment
+  #  - read-only filesystem (scratch space is a small tmpfs), non-root, no capabilities
+  #  - pids/memory/cpu caps on top of per-script rlimits (see app/sandbox.py)
+  runner:
+    build: ./backend
+    command: ["uvicorn", "app.runner:app", "--host", "0.0.0.0", "--port", "9000"]
+    restart: unless-stopped
+    environment:
+      RUNNER_TOKEN: ${RUNNER_TOKEN:-change-me-runner-token}
+      RUNNER_MAX_CONCURRENCY: 4
+      RUNNER_MEMORY_MB: 256
+    networks: [sandbox]
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    cap_drop: [ALL]
+    # Set RUNNER_NO_NEW_PRIVILEGES=false only where Docker can't support it (e.g. snap-installed Docker's
+    # AppArmor profile blocks exec with it). cap_drop: ALL still prevents gaining privileges.
+    security_opt: ["no-new-privileges:${RUNNER_NO_NEW_PRIVILEGES:-true}"]
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')"]
+      interval: 5s
+      retries: 10
+
+networks:
+  default:
+  sandbox:
+    internal: true    # no route to the outside world
 
 volumes:
   pg-data:

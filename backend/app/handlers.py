@@ -11,6 +11,7 @@ CPU-heavy work in production would go to a process pool or a dedicated worker.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import ipaddress
 import random
 import re
@@ -34,7 +35,9 @@ class PermanentError(Exception):
 def task(name: str, description: str, example: dict):
     def register(fn: Handler) -> Handler:
         REGISTRY[name] = {"fn": fn, "description": description, "example": example,
-                          "is_async": asyncio.iscoroutinefunction(fn)}
+                          "is_async": asyncio.iscoroutinefunction(fn),
+                          # handlers that declare `timeout_s` get the job's timeout (to stop work in time)
+                          "wants_timeout": "timeout_s" in inspect.signature(fn).parameters}
         return fn
     return register
 
@@ -155,10 +158,58 @@ async def http_request_task(payload: dict) -> dict:
             "body": data}
 
 
-async def run_handler(job_type: str, payload: dict) -> Any:
+def _tail(text: str, n: int) -> str:
+    return text if len(text) <= n else "…" + text[-n:]
+
+
+@task("run_code",
+      "Runs a Python script or shell command in the isolated sandbox runner (no network, no secrets).",
+      {"language": "python", "code": "name = inputs.get('name', 'world')\nprint(f'Hello, {name}!')\nresult = {'greeted': name}",
+       "inputs": {"name": "Shreyas"}})
+async def run_code_task(payload: dict, timeout_s: float = 60) -> dict:
+    from app.code_tasks import resolve_inputs, validate_code_payload
+
+    try:
+        validate_code_payload(payload)
+        inputs = resolve_inputs(payload.get("variables") or [], payload.get("inputs"))
+    except ValueError as exc:
+        raise PermanentError(str(exc)) from None
+    settings = get_settings()
+    # Leave headroom so the sandbox stops the script (keeping its partial output)
+    # before the worker's own job timeout fires.
+    script_timeout = max(0.5, timeout_s - max(1.0, timeout_s * 0.1))
+    try:
+        async with httpx.AsyncClient(timeout=script_timeout + 10) as client:
+            resp = await client.post(
+                f"{settings.runner_url}/run",
+                json={"language": payload["language"], "code": payload["code"],
+                      "inputs": inputs, "timeout_s": script_timeout},
+                headers={"Authorization": f"Bearer {settings.runner_token}"},
+            )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"sandbox runner unreachable: {exc}") from exc  # transient => retry
+    if resp.status_code in (400, 401, 403, 422):
+        raise PermanentError(f"sandbox rejected the request ({resp.status_code}): {resp.text[:300]}")
+    resp.raise_for_status()
+    run = resp.json()
+
+    if run["timed_out"] or run["exit_code"] != 0:
+        head = (f"Script timed out after {script_timeout:.1f}s" if run["timed_out"]
+                else f"Script exited with code {run['exit_code']}")
+        parts = [head]
+        if run["stderr"].strip():
+            parts.append("--- stderr ---\n" + _tail(run["stderr"].rstrip(), 1200))
+        if run["stdout"].strip():
+            parts.append("--- stdout ---\n" + _tail(run["stdout"].rstrip(), 500))
+        raise RuntimeError("\n".join(parts))
+    return run
+
+
+async def run_handler(job_type: str, payload: dict, timeout_s: float | None = None) -> Any:
     entry = REGISTRY.get(job_type)
     if entry is None:
         raise PermanentError(f"Unknown job type: {job_type}")
+    kwargs = {"timeout_s": timeout_s} if entry["wants_timeout"] and timeout_s else {}
     if entry["is_async"]:
-        return await entry["fn"](payload)
-    return await asyncio.to_thread(entry["fn"], payload)
+        return await entry["fn"](payload, **kwargs)
+    return await asyncio.to_thread(entry["fn"], payload, **kwargs)

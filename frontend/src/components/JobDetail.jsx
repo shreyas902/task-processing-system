@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { api } from '../api.js'
 import { usePoll } from '../usePoll.js'
 
@@ -32,8 +32,12 @@ export default function JobDetail({ id, onClose, onChanged }) {
               {['dead', 'cancelled'].includes(job.status) && <button onClick={() => act(api.retry)}>Retry</button>}
             </div>
             {actionErr && <p className="error small">{actionErr}</p>}
-            <h4>Payload</h4><pre>{JSON.stringify(job.payload, null, 2)}</pre>
-            {job.result != null && (<><h4>Result</h4><pre>{JSON.stringify(job.result, null, 2)}</pre></>)}
+            {job.type === 'run_code' ? <CodeRun job={job} /> : (
+              <>
+                <h4>Payload</h4><pre>{JSON.stringify(job.payload, null, 2)}</pre>
+                {job.result != null && (<><h4>Result</h4><pre>{JSON.stringify(job.result, null, 2)}</pre></>)}
+              </>
+            )}
             {job.error && (<><h4>Last error</h4><pre className="error">{job.error}</pre></>)}
             <h4>Execution history</h4>
             <ol className="timeline">
@@ -51,5 +55,34 @@ export default function JobDetail({ id, onClose, onChanged }) {
         )}
       </aside>
     </div>
+  )
+}
+
+/** Readable view of a Python / shell run: inputs, code, then output. */
+function CodeRun({ job }) {
+  const p = job.payload || {}
+  const r = job.result
+  const inputs = Object.entries(p.inputs || {})
+  return (
+    <>
+      {inputs.length > 0 && (
+        <>
+          <h4>Inputs</h4>
+          <dl className="kv">{inputs.map(([k, v]) => (
+            <Fragment key={k}><dt><code>{k}</code></dt><dd>{String(v)}</dd></Fragment>
+          ))}</dl>
+        </>
+      )}
+      <h4>{p.language === 'shell' ? 'Shell commands' : 'Python code'}</h4>
+      <pre className="code-view">{p.code}</pre>
+      {r && (
+        <>
+          <h4>Output <span className="muted small">exit code {r.exit_code} · {r.duration_ms} ms</span></h4>
+          <pre className="terminal">{r.stdout || '(no output)'}{r.stdout_truncated && '\n… output truncated'}</pre>
+          {r.stderr && (<><h4>stderr</h4><pre className="terminal error">{r.stderr}</pre></>)}
+          {r.result != null && (<><h4>result</h4><pre>{JSON.stringify(r.result, null, 2)}</pre></>)}
+        </>
+      )}
+    </>
   )
 }

@@ -99,7 +99,31 @@ queried, alerted on, and retried by hand (`POST /jobs/{id}/retry` resets attempt
 - **Schema evolution.** `create_all` doesn't alter existing tables, so the new `jobs.task_name` column is added with
   `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. In production this would be an Alembic migration.
 
-## 11. Measured
+## 11. Python / shell code tasks (sandboxed)
+Running user code is remote code execution by design, so the design starts from "assume the code is hostile":
+
+| Threat | Mitigation |
+|---|---|
+| Stealing DB/broker credentials | Code never runs in a worker. The `runner` container's env has no secrets, and the subprocess gets a fresh env (PATH, HOME, LANG and inputs only) |
+| Attacking Postgres/Redis/internal APIs, exfiltrating data | The runner is only on an `internal: true` Docker network shared with workers: no route to the DB, the broker or the internet |
+| Tampering with the runner | Read-only root FS (scratch is a 64 MB tmpfs), non-root user, `cap_drop: ALL`, `no-new-privileges` |
+| Resource exhaustion | rlimits per script (CPU seconds, 256 MB address space, 16 MB files, 256 fds), `pids_limit` (fork bombs), container mem/cpu caps, runner concurrency semaphore, 64 KB output cap |
+| Runaway / background processes | Each script runs in its own session/process group. The whole group is SIGKILLed on timeout **and** after exit (kills `cmd &` leftovers) |
+| Shell injection through inputs | Inputs are passed as env vars and a JSON `inputs` dict, never interpolated into code. Names must be lowercase identifiers, so they can't override `PATH`/`LD_PRELOAD` |
+| Unauthorized calls to the runner | Shared bearer token (constant-time compare), reachable only from the sandbox network |
+
+Other decisions:
+- **Variables** are declared per task (type, default, required, description), validated and coerced in the API (422 before
+  any job exists) and again in the worker and runner (defence in depth). Recurring tasks must have defaults for required variables.
+- **A run may only supply `inputs`**. The code is part of the task definition, so a run can't swap it.
+- **Results.** stdout/stderr/exit code are always captured. Python can set `result` for structured output (via a `runpy` wrapper,
+  which keeps the user's line numbers in tracebacks). A non-zero exit or a timeout fails the attempt, with the stderr/stdout tail in `error`.
+- The script timeout is slightly shorter than the job timeout, so the sandbox kills the script and returns partial output
+  before the worker's own timeout fires.
+- **Stronger isolation for multi-tenant use:** gVisor / Kata / Firecracker microVMs, or a fresh container per run,
+  seccomp profiles, and per-tenant quotas. A container shares the host kernel, so a kernel exploit could escape it.
+
+## 12. Measured
 - Both brokers pass the same end-to-end suite.
 - `SIGKILL` on all workers mid-job: every job was recovered and succeeded on attempt 2.
 - 100 ms jobs: 2 workers × 4 slots ≈ 60 jobs/s, and 4 workers ≈ 119 jobs/s (linear scale-out). The ceiling is

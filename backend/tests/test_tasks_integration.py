@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 
-from tests.test_integration import client, wait_for  # noqa: F401  (shared fixture + helper)
+from tests.test_integration import _cleanup_created_tasks, client, wait_for  # noqa: F401
 
 pytestmark = pytest.mark.integration
 

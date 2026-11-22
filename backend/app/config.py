@@ -30,6 +30,13 @@ class Settings(BaseSettings):
 
     # HTTP tasks: hosts allowed even though they resolve to private IPs (comma separated).
     http_allowed_hosts: str = ""
+    # Code tasks (Python / shell) run in the isolated sandbox runner service.
+    runner_url: str = "http://localhost:9000"
+    runner_token: str = "dev-runner-token"
+    runner_max_concurrency: int = 8
+    runner_memory_mb: int = 256       # address-space limit per script
+    runner_max_output: int = 64_000   # bytes kept from stdout / stderr each
+
     # Recurring tasks can't run more often than this.
     min_task_interval_s: int = 5
 

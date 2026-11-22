@@ -71,7 +71,8 @@ class WorkerProcess:
     async def execute(self, job) -> None:
         try:
             log.info("job %s (%s) attempt %d started", job.id, job.type, job.attempts)
-            result = await asyncio.wait_for(run_handler(job.type, job.payload or {}), timeout=job.timeout_s)
+            result = await asyncio.wait_for(run_handler(job.type, job.payload or {}, job.timeout_s),
+                                          timeout=job.timeout_s)
             await self.jobs.complete(job, self.id, result)
             self.processed += 1
             log.info("job %s succeeded", job.id)

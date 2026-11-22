@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import text
 
 from app.brokers import create_broker
+from app.code_tasks import validate_code_payload, validate_variables
 from app.config import get_settings
 from app.db import init_db, make_engine, make_sessionmaker
 from app.handlers import REGISTRY
@@ -207,13 +208,18 @@ async def workers(request: Request):
 TASK_NAME = r"^[a-z0-9][a-z0-9_-]{1,63}$"
 
 
-def _check_handler_payload(handler: str, payload: dict) -> None:
+def _check_handler_payload(handler: str, payload: dict, recurring: bool = False) -> dict:
+    """Validate a task's payload for its handler; returns the (normalised) payload."""
     if handler not in REGISTRY:
         raise ValueError(f"unknown handler; available: {sorted(REGISTRY)}")
+    if handler == "run_code":
+        validate_code_payload(payload, recurring=recurring)
+        return {**payload, "variables": validate_variables(payload.get("variables", []))}
     if handler in ("http_request", "http_check"):
         url = str(payload.get("url", ""))
         if not url.startswith(("http://", "https://")):
             raise ValueError("default_payload.url must start with http:// or https://")
+    return payload
 
 
 def _validate_interval(v: int | None) -> int | None:
@@ -241,7 +247,8 @@ class TaskBase(BaseModel):
 
     @model_validator(mode="after")
     def payload_matches_handler(self):
-        _check_handler_payload(self.handler, self.default_payload)
+        self.default_payload = _check_handler_payload(self.handler, self.default_payload,
+                                                      recurring=self.interval_seconds is not None)
         return self
 
 
@@ -343,8 +350,11 @@ async def update_task(request: Request, name: str, body: TaskUpdate):
     current = await _task_or_404(request, name)
     handler = changes.get("handler") or current.handler
     payload = changes["default_payload"] if changes.get("default_payload") is not None else current.default_payload
+    interval = changes["interval_s"] if "interval_s" in changes else current.interval_s
     try:
-        _check_handler_payload(handler, payload)
+        normalised = _check_handler_payload(handler, payload, recurring=interval is not None)
+        if "default_payload" in changes:
+            changes["default_payload"] = normalised
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
     try:
@@ -367,6 +377,9 @@ async def run_task(request: Request, name: str, response: Response, body: TaskRu
     """Run a task now (or after a delay), optionally overriding parts of its payload."""
     body = body or TaskRun()
     task = await _task_or_404(request, name)
+    if task.handler == "run_code" and set(body.payload) - {"inputs"}:
+        # The code itself is part of the task definition; a run may only supply inputs.
+        raise HTTPException(422, "code tasks accept only {\"payload\": {\"inputs\": {...}}} when run")
     payload = {**(task.default_payload or {}), **body.payload}
     try:
         _check_handler_payload(task.handler, payload)

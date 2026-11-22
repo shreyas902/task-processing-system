@@ -73,3 +73,21 @@ td.actions button { padding: 5px 10px; font-size: 0.8rem; }
 .tab.danger { color: var(--bad); border-color: #5c1a2a; }
 td .wrap { white-space: normal; max-width: 260px; word-break: break-all; }
 .clickable { cursor: pointer; }
+.kinds { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+textarea.code, .mono, pre.code-view, pre.terminal { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+textarea.code { font-size: 0.8rem; line-height: 1.45; white-space: pre; overflow-x: auto; tab-size: 4; background: #0b1020; }
+pre.code-view { white-space: pre; overflow-x: auto; word-break: normal; background: #0b1020; }
+pre.terminal { background: #05070d; color: #d5f5e3; max-height: 320px; overflow-y: auto; }
+pre.terminal.error { color: var(--bad); }
+.vars { display: grid; gap: 6px; margin-bottom: 8px; }
+.vars-head, .var-row { display: grid; grid-template-columns: 1fr 96px 1fr 30px 22px; gap: 6px; align-items: center; }
+.var-row input, .var-row select { margin-top: 0; }
+.var-row input[type=checkbox] { width: auto; justify-self: center; }
+.var-row .var-desc { grid-column: 1 / -1; margin-bottom: 6px; }
+.danger-text { color: var(--bad) !important; }
+.pill.lang-python { background: #1e3a5f; } .pill.lang-shell { background: #3d2e10; }
+.drawer-backdrop.center { justify-content: center; align-items: flex-start; padding-top: 10vh; }
+.dialog { width: min(440px, calc(100% - 32px)); }
+.dialog label > span { display: block; margin-bottom: 2px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 0.85rem; margin: 0; }
+.kv dd { margin: 0; word-break: break-all; }

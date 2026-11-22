@@ -11,12 +11,17 @@ CPU-heavy work in production would go to a process pool or a dedicated worker.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import random
 import re
+import socket
 from collections import Counter
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlparse
 
 import httpx
+
+from app.config import get_settings
 
 Handler = Callable[[dict], Any] | Callable[[dict], Awaitable[Any]]
 REGISTRY: dict[str, dict] = {}
@@ -74,14 +79,80 @@ async def always_fail_task(payload: dict) -> dict:
     raise RuntimeError("this job always fails")
 
 
+def check_url(url: str) -> None:
+    """SSRF guard: workers fetch user-supplied URLs, so refuse internal/private targets.
+
+    Without this, a task could hit cloud metadata (169.254.169.254), the database,
+    Redis or other internal services from inside our network. Hosts listed in
+    HTTP_ALLOWED_HOSTS bypass the check (e.g. a trusted internal webhook).
+    Redirects are not followed, because a public URL could redirect to a private one.
+    (A resolver-pinning HTTP transport would also close the DNS-rebinding gap.)
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise PermanentError("url must be an absolute http:// or https:// URL")
+    host = parsed.hostname.lower()
+    allowed = {h.strip().lower() for h in get_settings().http_allowed_hosts.split(",") if h.strip()}
+    if host in allowed:
+        return
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or 443, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise RuntimeError(f"DNS lookup failed for {host}: {exc}") from exc  # transient => retry
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global or ip.is_multicast:
+            raise PermanentError(f"{host} resolves to non-public address {ip}; blocked (SSRF protection)")
+
+
 @task("http_check", "GETs a URL and reports status code and latency.", {"url": "https://example.com"})
 async def http_check_task(payload: dict) -> dict:
     url = str(payload.get("url", ""))
-    if not url.startswith(("http://", "https://")):
-        raise PermanentError("url must start with http:// or https://")
-    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+    await asyncio.to_thread(check_url, url)  # getaddrinfo blocks; keep it off the event loop
+    async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
         resp = await client.get(url)
     return {"status_code": resp.status_code, "elapsed_ms": int(resp.elapsed.total_seconds() * 1000)}
+
+
+HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
+
+
+@task("http_request",
+      "Calls an HTTP endpoint (webhook). 5xx/429/network errors are retried; other 4xx fail permanently.",
+      {"method": "POST", "url": "https://httpbin.org/post", "headers": {"X-Source": "task-system"},
+       "body": {"hello": "world"}, "expected_status": [200, 201, 202, 204]})
+async def http_request_task(payload: dict) -> dict:
+    method = str(payload.get("method", "GET")).upper()
+    if method not in HTTP_METHODS:
+        raise PermanentError(f"method must be one of {sorted(HTTP_METHODS)}")
+    url = str(payload.get("url", ""))
+    await asyncio.to_thread(check_url, url)
+    headers = payload.get("headers") or {}
+    if not isinstance(headers, dict):
+        raise PermanentError("headers must be an object")
+    expected = payload.get("expected_status") or []
+    if not isinstance(expected, list) or not all(isinstance(c, int) for c in expected):
+        raise PermanentError("expected_status must be a list of integers")
+    body = payload.get("body")
+
+    async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+        resp = await client.request(
+            method, url, headers={str(k): str(v) for k, v in headers.items()},
+            json=body if body is not None and method not in ("GET", "HEAD") else None,
+        )
+    ok = resp.status_code in expected if expected else resp.is_success
+    if not ok:
+        msg = f"Unexpected HTTP {resp.status_code} from {url}: {resp.text[:200]}"
+        # Client errors won't fix themselves on retry - except timeouts and rate limiting.
+        if 400 <= resp.status_code < 500 and resp.status_code not in (408, 425, 429):
+            raise PermanentError(msg)
+        raise RuntimeError(msg)
+    try:
+        data = resp.json()
+    except ValueError:
+        data = resp.text[:1000]
+    return {"status_code": resp.status_code, "elapsed_ms": int(resp.elapsed.total_seconds() * 1000),
+            "body": data}
 
 
 async def run_handler(job_type: str, payload: dict) -> Any:

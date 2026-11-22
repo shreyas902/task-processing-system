@@ -77,7 +77,29 @@ queried, alerted on, and retried by hand (`POST /jobs/{id}/retry` resets attempt
 - Heartbeats upsert into the `workers` table (`INSERT ... ON CONFLICT DO UPDATE`).
 - **Graceful shutdown** on SIGTERM: stop consuming, wait for running jobs (`stop_grace_period`), then mark the worker stopped.
 
-## 10. Measured
+## 10. User-created tasks
+- **Task vs job.** A *task definition* is a template: what to run (handler + default payload) and how (priority,
+  retries, timeout, optional interval). A *job* is one execution. Running a task just calls `JobService.submit`
+  with `task_name` set, so tasks reuse the whole execution engine (retries, DLQ, leases, history) with no
+  special cases in the worker.
+- **No user code execution.** Users compose *registered* handlers. The generic `http_request` webhook handler covers
+  most custom needs without running arbitrary code (which would need sandboxing).
+- **Recurring tasks.** The scheduler (single leader) selects due definitions with `FOR UPDATE SKIP LOCKED`
+  and advances `next_run_at` **from now**, not from the missed slot. After downtime a task runs once instead of
+  replaying every missed run. Each run gets the idempotency key `recurring:{task_id}:{slot}`, so a slot can never
+  produce two jobs. A partial index on `next_run_at WHERE enabled AND interval_s IS NOT NULL` keeps polling cheap.
+  The minimum interval (5 s) protects the system and downstream services.
+- **Webhook retry semantics.** 5xx, 408/425/429 and network errors are transient, so they retry with backoff. Other 4xx
+  responses mean the request itself is wrong, so it goes straight to the DLQ (`PermanentError`) without wasting retries.
+- **SSRF protection.** Workers sit inside the network, so a user-supplied URL could target cloud metadata
+  (`169.254.169.254`), Postgres, Redis or admin APIs. Before every request, the hostname is resolved and rejected if
+  any address is non-global. Redirects are disabled, because a public URL could 302 to an internal one.
+  `HTTP_ALLOWED_HOSTS` allowlists trusted internal hosts. Remaining gap: DNS rebinding between the check and
+  the connect. The fix is to pin the resolved IP in a custom transport, or route through an egress proxy.
+- **Schema evolution.** `create_all` doesn't alter existing tables, so the new `jobs.task_name` column is added with
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. In production this would be an Alembic migration.
+
+## 11. Measured
 - Both brokers pass the same end-to-end suite.
 - `SIGKILL` on all workers mid-job: every job was recovered and succeeded on attempt 2.
 - 100 ms jobs: 2 workers × 4 slots ≈ 60 jobs/s, and 4 workers ≈ 119 jobs/s (linear scale-out). The ceiling is
@@ -85,6 +107,6 @@ queried, alerted on, and retried by hand (`POST /jobs/{id}/retry` resets attempt
 
 ## Next steps
 - Transactional outbox, plus Alembic migrations.
-- Per-type queues and rate limits, cron-style recurring jobs, and job dependencies (DAGs).
+- Per-type queues and rate limits, cron expressions (beyond fixed intervals), and job dependencies (DAGs).
 - Prometheus metrics, OpenTelemetry tracing, and auth / multi-tenancy.
 - Archival/partitioning of old `jobs` and `job_events` rows.

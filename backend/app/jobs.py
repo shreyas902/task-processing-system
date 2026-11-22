@@ -46,19 +46,20 @@ class JobService:
 
     # ------------------------------------------------------------------- submit
     async def submit(self, *, type: str, payload: dict, priority: str = "normal", max_retries: int = 3,
-                     timeout_s: int = 60, delay_s: float = 0, idempotency_key: str | None = None
-                     ) -> tuple[Job, bool]:
+                     timeout_s: int = 60, delay_s: float = 0, idempotency_key: str | None = None,
+                     task_name: str | None = None) -> tuple[Job, bool]:
         """Create a job. Returns (job, created). Re-submitting an idempotency key returns the original job."""
         now = utcnow()
         job = Job(
             id=uuid.uuid4(), type=type, payload=payload, priority=priority, max_retries=max_retries,
-            timeout_s=timeout_s, idempotency_key=idempotency_key,
+            timeout_s=timeout_s, idempotency_key=idempotency_key, task_name=task_name,
             status=Status.SCHEDULED if delay_s > 0 else Status.QUEUED,
             run_at=now + timedelta(seconds=delay_s), created_at=now, updated_at=now,
         )
         async with self.sessions() as s:
             s.add(job)
-            self._event(s, job.id, "created", message=f"priority={priority}")
+            self._event(s, job.id, "created",
+                        message=f"priority={priority}" + (f", from task '{task_name}'" if task_name else ""))
             if delay_s > 0:
                 self._event(s, job.id, "scheduled", message=f"runs at {job.run_at.isoformat()}")
             try:
@@ -181,9 +182,12 @@ class JobService:
             return (await s.execute(
                 select(Job).options(selectinload(Job.events)).where(Job.id == job_id))).scalar_one_or_none()
 
-    async def list(self, status: str | None, type: str | None, limit: int, offset: int) -> tuple[list[Job], int]:
+    async def list(self, status: str | None, type: str | None, limit: int, offset: int,
+                   task: str | None = None) -> tuple[list[Job], int]:
         q = select(Job)
         cq = select(func.count()).select_from(Job)
+        if task:
+            q, cq = q.where(Job.task_name == task), cq.where(Job.task_name == task)
         if status:
             q, cq = q.where(Job.status == status), cq.where(Job.status == status)
         if type:

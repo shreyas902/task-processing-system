@@ -8,19 +8,19 @@ const PAGE = 20
 export const ago = (iso) => {
   if (!iso) return '–'
   const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000)
-  if (s < -1) return `in ${-s}s`
-  return s < 60 ? `${Math.max(s, 0)}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`
+  const fmt = (n) => (n < 60 ? `${n}s` : n < 3600 ? `${Math.floor(n / 60)}m` : `${Math.floor(n / 3600)}h`)
+  return s < -1 ? `in ${fmt(-s)}` : `${fmt(Math.max(s, 0))} ago`
 }
 
-export default function JobsTable({ refreshKey, onSelect, selected }) {
+export default function JobsTable({ refreshKey, onSelect, selected, task = null, title = 'Jobs' }) {
   const [status, setStatus] = useState('')
   const [page, setPage] = useState(0)
-  const [data, error] = usePoll(() => api.jobs({ status, limit: PAGE, offset: page * PAGE }), [status, page, refreshKey])
+  const [data, error] = usePoll(() => api.jobs({ status, task, limit: PAGE, offset: page * PAGE }), [status, task, page, refreshKey])
 
   return (
     <section className="card">
       <div className="row between">
-        <h3>Jobs {data && <span className="muted small">({data.total})</span>}</h3>
+        <h3>{title} {data && <span className="muted small">({data.total})</span>}</h3>
         <div className="row">
           {FILTERS.map((f) => (
             <button key={f} className={f === status ? 'tab active' : 'tab'} onClick={() => { setStatus(f); setPage(0) }}>
@@ -38,7 +38,7 @@ export default function JobsTable({ refreshKey, onSelect, selected }) {
           {data?.items.map((j) => (
             <tr key={j.id} onClick={() => onSelect(j.id)} className={j.id === selected ? 'selected clickable' : 'clickable'}>
               <td><code>{j.id.slice(0, 8)}</code></td>
-              <td>{j.type}</td>
+              <td>{j.type}{j.task_name && <div className="muted small">task: {j.task_name}</div>}</td>
               <td><span className={`pill pr-${j.priority}`}>{j.priority}</span></td>
               <td>
                 <span className={`pill st-${j.status}`}>{j.status}</span>

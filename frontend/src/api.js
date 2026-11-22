@@ -20,10 +20,11 @@ export const api = {
   taskTypes: () => request('/api/task-types'),
   stats: () => request('/api/stats'),
   workers: () => request('/api/workers'),
-  jobs: ({ status, type, limit = 20, offset = 0 }) => {
+  jobs: ({ status, type, task, limit = 20, offset = 0 }) => {
     const q = new URLSearchParams({ limit, offset })
     if (status) q.set('status', status)
     if (type) q.set('type', type)
+    if (task) q.set('task', task)
     return request(`/api/jobs?${q}`)
   },
   job: (id) => request(`/api/jobs/${id}`),
@@ -31,5 +32,12 @@ export const api = {
   bulk: (body) => post('/api/jobs/bulk', body),
   cancel: (id) => post(`/api/jobs/${id}/cancel`),
   retry: (id) => post(`/api/jobs/${id}/retry`),
+  tasks: () => request('/api/tasks'),
+  createTask: (body) => post('/api/tasks', body),
+  updateTask: (name, body) => request(`/api/tasks/${encodeURIComponent(name)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }),
+  deleteTask: (name) => fetch(`${BASE}/api/tasks/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  runTask: (name, body) => post(`/api/tasks/${encodeURIComponent(name)}/run`, body),
 }
 

@@ -7,6 +7,9 @@ x-app: &app
     REDIS_URL: redis://redis:6379/0
     RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
     WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+    # HTTP tasks may not call private/internal addresses (SSRF protection), except these hosts.
+    # Demo default lets webhook tasks call this system's own API; set to "" in production.
+    HTTP_ALLOWED_HOSTS: ${HTTP_ALLOWED_HOSTS-api}
   depends_on:
     postgres: { condition: service_healthy }
     redis: { condition: service_healthy }

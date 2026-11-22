@@ -18,7 +18,7 @@ h1, h3, h4 { margin: 0.4em 0; }
 .between { justify-content: space-between; }
 .grid { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 16px; align-items: start; }
 @media (max-width: 960px) { .grid { grid-template-columns: 1fr; } }
-input, select, textarea { width: 100%; background: #0f1524; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; font: inherit; margin-top: 4px; }
+input, select, textarea { width: 100%; background: #0f1524; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 0.85rem; margin-top: 4px; }
 label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 8px; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
 button { background: var(--accent); color: white; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-weight: 600; }
@@ -60,3 +60,16 @@ tr.clickable:hover, tr.selected { background: #1d2740; }
 .timeline li.ev-succeeded::before { background: var(--ok); }
 .timeline li.ev-failed::before, .timeline li.ev-dead_lettered::before { background: var(--bad); }
 .timeline li.ev-retry_scheduled::before, .timeline li.ev-scheduled::before { background: var(--warn); }
+.nav { margin-left: 16px; }
+fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px 4px; margin: 0 0 10px; }
+legend { color: var(--muted); font-size: 0.8rem; padding: 0 4px; }
+label.check { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 0.85rem; }
+label.check input { width: auto; margin: 0; }
+.method-url { display: grid; grid-template-columns: 100px 1fr; gap: 6px; margin-bottom: 8px; }
+.method-url select, .method-url input { margin-top: 0; }
+input.narrow, select.narrow { width: 110px; margin-top: 0; }
+td.actions { display: flex; gap: 4px; flex-wrap: wrap; }
+td.actions button { padding: 5px 10px; font-size: 0.8rem; }
+.tab.danger { color: var(--bad); border-color: #5c1a2a; }
+td .wrap { white-space: normal; max-width: 260px; word-break: break-all; }
+.clickable { cursor: pointer; }

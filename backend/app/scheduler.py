@@ -11,6 +11,8 @@ Runs a loop every ``SCHEDULER_INTERVAL_S`` that:
 3. **Republishes stale QUEUED jobs** - covers the gap where the DB commit
    succeeded but the broker publish failed (the "dual-write" problem).
 4. **Requeues expired in-flight messages** (Redis only; RabbitMQ does it natively).
+5. **Fires recurring tasks** - user-created tasks with a repeat interval whose
+   ``next_run_at`` has passed get a new job.
 
 High availability: you can run several schedulers. Only the one holding the
 PostgreSQL advisory lock does work (leader election); the others stand by and
@@ -30,6 +32,7 @@ from app.brokers import create_broker
 from app.config import get_settings
 from app.db import Job, JobEvent, init_db, make_engine, make_sessionmaker
 from app.jobs import JobService, utcnow
+from app.tasks import TaskService
 from app.state import Status
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [scheduler] %(message)s")
@@ -46,6 +49,7 @@ class Scheduler:
         self.sessions = make_sessionmaker(self.engine)
         self.broker = create_broker(self.settings)
         self.jobs = JobService(self.sessions, self.broker, self.settings)
+        self.tasks = TaskService(self.sessions, self.jobs)
         self.stopping = asyncio.Event()
 
     async def promote_due(self) -> int:
@@ -97,8 +101,10 @@ class Scheduler:
         reaped = await self.reap_expired_leases()
         stale = await self.republish_stale_queued()
         requeued = await self.broker.requeue_expired()
-        if promoted or reaped or stale or requeued:
-            log.info("promoted=%d reaped=%d republished=%d requeued=%d", promoted, reaped, stale, requeued)
+        fired = await self.tasks.fire_due()
+        if promoted or reaped or stale or requeued or fired:
+            log.info("promoted=%d reaped=%d republished=%d requeued=%d recurring_fired=%d",
+                     promoted, reaped, stale, requeued, fired)
 
     async def run(self) -> None:
         await init_db(self.engine)

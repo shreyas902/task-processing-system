@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     claim_visibility_s: float = 60.0      # Redis: popped-but-unclaimed message is redelivered after this
     stale_queued_s: float = 300.0         # QUEUED with no claim for this long => republish (lost publish)
 
+    # HTTP tasks: hosts allowed even though they resolve to private IPs (comma separated).
+    http_allowed_hosts: str = ""
+    # Recurring tasks can't run more often than this.
+    min_task_interval_s: int = 5
+
     cors_origins: str = "*"
 
 

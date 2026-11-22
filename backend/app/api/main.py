@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import text
 
 from app.brokers import create_broker
@@ -19,6 +19,7 @@ from app.config import get_settings
 from app.db import init_db, make_engine, make_sessionmaker
 from app.handlers import REGISTRY
 from app.jobs import JobConflict, JobService
+from app.tasks import TaskConflict, TaskService
 from app.state import Priority, Status
 
 
@@ -31,7 +32,9 @@ async def lifespan(app: FastAPI):
     await broker.connect()
     app.state.engine = engine
     app.state.broker = broker
-    app.state.jobs = JobService(make_sessionmaker(engine), broker, settings)
+    sessions = make_sessionmaker(engine)
+    app.state.jobs = JobService(sessions, broker, settings)
+    app.state.tasks = TaskService(sessions, app.state.jobs)
     yield
     await broker.close()
     await engine.dispose()
@@ -84,6 +87,7 @@ class JobOut(BaseModel):
     max_retries: int
     timeout_s: int
     idempotency_key: str | None
+    task_name: str | None = None
     result: Any | None
     error: str | None
     worker_id: str | None
@@ -149,8 +153,9 @@ async def create_bulk(request: Request, body: BulkCreate):
 
 @app.get("/api/jobs", response_model=JobPage)
 async def list_jobs(request: Request, status: Status | None = None, type: str | None = None,
+                    task: str | None = None,
                     limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0)):
-    items, total = await svc(request).list(status.value if status else None, type, limit, offset)
+    items, total = await svc(request).list(status.value if status else None, type, limit, offset, task)
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
@@ -196,3 +201,178 @@ async def stats(request: Request):
 @app.get("/api/workers")
 async def workers(request: Request):
     return await svc(request).workers()
+
+
+# ------------------------------------------------------------ task definitions
+TASK_NAME = r"^[a-z0-9][a-z0-9_-]{1,63}$"
+
+
+def _check_handler_payload(handler: str, payload: dict) -> None:
+    if handler not in REGISTRY:
+        raise ValueError(f"unknown handler; available: {sorted(REGISTRY)}")
+    if handler in ("http_request", "http_check"):
+        url = str(payload.get("url", ""))
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("default_payload.url must start with http:// or https://")
+
+
+def _validate_interval(v: int | None) -> int | None:
+    minimum = get_settings().min_task_interval_s
+    if v is not None and v < minimum:
+        raise ValueError(f"must be at least {minimum} seconds")
+    return v
+
+
+class TaskBase(BaseModel):
+    description: str = Field("", max_length=500)
+    handler: str = Field(..., examples=["http_request"])
+    default_payload: dict[str, Any] = Field(default_factory=dict)
+    priority: Priority = Priority.NORMAL
+    max_retries: int = Field(3, ge=0, le=20)
+    timeout_seconds: int = Field(60, ge=1, le=3600)
+    interval_seconds: int | None = Field(None, le=7 * 86_400,
+                                         description="Repeat every N seconds; null = run on demand only")
+    enabled: bool = True
+
+    @field_validator("interval_seconds")
+    @classmethod
+    def min_interval(cls, v: int | None) -> int | None:
+        return _validate_interval(v)
+
+    @model_validator(mode="after")
+    def payload_matches_handler(self):
+        _check_handler_payload(self.handler, self.default_payload)
+        return self
+
+
+class TaskCreate(TaskBase):
+    name: str = Field(..., pattern=TASK_NAME, examples=["nightly-report"],
+                      description="lowercase letters, digits, '-' and '_'")
+
+
+class TaskUpdate(BaseModel):
+    """PATCH: only the fields that are sent are changed."""
+    description: str | None = Field(None, max_length=500)
+    handler: str | None = None
+    default_payload: dict[str, Any] | None = None
+    priority: Priority | None = None
+    max_retries: int | None = Field(None, ge=0, le=20)
+    timeout_seconds: int | None = Field(None, ge=1, le=3600)
+    interval_seconds: int | None = Field(None, le=7 * 86_400)
+    enabled: bool | None = None
+
+    @field_validator("interval_seconds")
+    @classmethod
+    def min_interval(cls, v: int | None) -> int | None:
+        return _validate_interval(v)
+
+
+class TaskOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    name: str
+    description: str
+    handler: str
+    default_payload: dict
+    priority: str
+    max_retries: int
+    timeout_s: int
+    interval_s: int | None
+    enabled: bool
+    next_run_at: datetime | None
+    last_run_at: datetime | None
+    run_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskWithStats(TaskOut):
+    stats: dict[str, int] = {}
+
+
+class TaskRun(BaseModel):
+    payload: dict[str, Any] = Field(default_factory=dict, description="Merged over the task's default payload")
+    delay_seconds: float = Field(0, ge=0, le=86_400)
+    idempotency_key: str | None = Field(None, max_length=128)
+
+
+def tasks_svc(request: Request) -> TaskService:
+    return request.app.state.tasks
+
+
+def _to_columns(data: dict) -> dict:
+    """API field names -> model column names."""
+    renames = {"timeout_seconds": "timeout_s", "interval_seconds": "interval_s"}
+    out = {renames.get(k, k): v for k, v in data.items()}
+    if isinstance(out.get("priority"), Priority):
+        out["priority"] = out["priority"].value
+    return out
+
+
+@app.post("/api/tasks", response_model=TaskOut, status_code=201)
+async def create_task(request: Request, body: TaskCreate):
+    try:
+        return await tasks_svc(request).create(_to_columns(body.model_dump()))
+    except TaskConflict as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
+@app.get("/api/tasks", response_model=list[TaskWithStats])
+async def list_tasks(request: Request):
+    rows = await tasks_svc(request).list()
+    return [TaskWithStats.model_validate(r["task"]).model_copy(update={"stats": r["stats"]}) for r in rows]
+
+
+async def _task_or_404(request: Request, name: str):
+    task = await tasks_svc(request).get(name)
+    if not task:
+        raise HTTPException(404, f"Task '{name}' not found")
+    return task
+
+
+@app.get("/api/tasks/{name}", response_model=TaskOut)
+async def get_task(request: Request, name: str):
+    return await _task_or_404(request, name)
+
+
+@app.patch("/api/tasks/{name}", response_model=TaskOut)
+async def update_task(request: Request, name: str, body: TaskUpdate):
+    # Only interval_s may be cleared (null = on-demand only); null elsewhere means "unchanged".
+    changes = {k: v for k, v in _to_columns(body.model_dump(exclude_unset=True)).items()
+               if v is not None or k == "interval_s"}
+    current = await _task_or_404(request, name)
+    handler = changes.get("handler") or current.handler
+    payload = changes["default_payload"] if changes.get("default_payload") is not None else current.default_payload
+    try:
+        _check_handler_payload(handler, payload)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    try:
+        return await tasks_svc(request).update(name, changes)
+    except KeyError:
+        raise HTTPException(404, f"Task '{name}' not found") from None
+
+
+@app.delete("/api/tasks/{name}", status_code=204)
+async def delete_task(request: Request, name: str):
+    try:
+        await tasks_svc(request).delete(name)
+    except KeyError:
+        raise HTTPException(404, f"Task '{name}' not found") from None
+    return Response(status_code=204)
+
+
+@app.post("/api/tasks/{name}/run", response_model=JobOut, status_code=201)
+async def run_task(request: Request, name: str, response: Response, body: TaskRun | None = None):
+    """Run a task now (or after a delay), optionally overriding parts of its payload."""
+    body = body or TaskRun()
+    task = await _task_or_404(request, name)
+    payload = {**(task.default_payload or {}), **body.payload}
+    try:
+        _check_handler_payload(task.handler, payload)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    job, created = await tasks_svc(request).run(task, body.payload, body.delay_seconds, body.idempotency_key)
+    if not created:
+        response.status_code = 200
+    return job

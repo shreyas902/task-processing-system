@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -33,6 +33,7 @@ class Job(Base):
     max_retries: Mapped[int] = mapped_column(Integer, default=3)
     timeout_s: Mapped[int] = mapped_column(Integer, default=60)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True)
+    task_name: Mapped[str | None] = mapped_column(String(64), index=True)  # set when created from a TaskDefinition
     result: Mapped[dict | None] = mapped_column(JsonType)
     error: Mapped[str | None] = mapped_column(Text)
     worker_id: Mapped[str | None] = mapped_column(String(64))
@@ -71,6 +72,35 @@ class JobEvent(Base):
     job: Mapped[Job] = relationship(back_populates="events")
 
 
+class TaskDefinition(Base):
+    """A user-created, reusable task: a handler + default payload + execution policy.
+
+    Running a task creates a Job from this template. With ``interval_s`` set, the
+    scheduler runs it automatically every N seconds (a recurring task).
+    """
+    __tablename__ = "task_definitions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    handler: Mapped[str] = mapped_column(String(64))
+    default_payload: Mapped[dict] = mapped_column(JsonType, default=dict)
+    priority: Mapped[str] = mapped_column(String(8), default="normal")
+    max_retries: Mapped[int] = mapped_column(Integer, default=3)
+    timeout_s: Mapped[int] = mapped_column(Integer, default=60)
+    interval_s: Mapped[int | None] = mapped_column(Integer)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    run_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_tasks_due", "next_run_at", postgresql_where=text("enabled AND interval_s IS NOT NULL")),
+    )
+
+
 class Worker(Base):
     """Worker registry, refreshed by heartbeats. A worker is alive if its heartbeat is recent."""
     __tablename__ = "workers"
@@ -102,3 +132,6 @@ async def init_db(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.execute(text("SELECT pg_advisory_xact_lock(4242)"))
         await conn.run_sync(Base.metadata.create_all)
+        # create_all never alters existing tables: add columns introduced after the first release.
+        await conn.execute(text("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS task_name VARCHAR(64)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_task_name ON jobs (task_name)"))

@@ -51,3 +51,27 @@ export default function RunTaskDialog({ task, onClose, onStarted }) {
     </div>
   )
 }
+
+/**
+ * Shared "run a task" flow: tasks with input variables open the inputs dialog first,
+ * others run immediately. Returns [run(task), dialogElement].
+ */
+export function useRunTask(onStarted, onError) {
+  const [prompting, setPrompting] = useState(null)
+  const run = async (task) => {
+    if (task.handler === 'run_code' && task.default_payload?.variables?.length) {
+      setPrompting(task)
+      return
+    }
+    try {
+      onStarted(task, await api.runTask(task.name, {}))
+    } catch (e) {
+      onError?.(e)
+    }
+  }
+  const dialog = prompting && (
+    <RunTaskDialog task={prompting} onClose={() => setPrompting(null)}
+                   onStarted={(job) => { const t = prompting; setPrompting(null); onStarted(t, job) }} />
+  )
+  return [run, dialog]
+}

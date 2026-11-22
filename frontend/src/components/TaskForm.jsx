@@ -36,7 +36,7 @@ const EMPTY = {
   name: '', description: '', kind: 'python', handler: 'fibonacci', payload: '{}',
   code: TEMPLATES.python, variables: EXAMPLE_VARS,
   priority: 'normal', max_retries: 0, timeout_seconds: 60,
-  recurring: false, every: 5, unit: 'minutes', enabled: true,
+  recurring: false, every: 5, unit: 'minutes', enabled: true, runNow: true,
   method: 'POST', url: 'https://httpbin.org/post', headers: '{}', body: '{"hello": "world"}', expected: '',
 }
 
@@ -139,7 +139,7 @@ export default function TaskForm({ editing, onSaved, onCancel }) {
         interval_seconds: f.recurring ? Math.round(+f.every * UNITS[f.unit]) : null,
       }
       const saved = editing ? await api.updateTask(editing.name, body) : await api.createTask({ name: f.name, ...body })
-      onSaved(saved)
+      onSaved(saved, { runNow: !editing && f.runNow && f.enabled })
       if (!editing) setF(EMPTY)
     } catch (err) {
       setError(err.message)
@@ -243,6 +243,13 @@ export default function TaskForm({ editing, onSaved, onCancel }) {
         )}
         <label className="check"><input type="checkbox" checked={f.enabled} onChange={set('enabled')} /> Enabled</label>
       </fieldset>
+
+      {!editing && (
+        <label className="check">
+          <input type="checkbox" checked={f.runNow && f.enabled} disabled={!f.enabled} onChange={set('runNow')} />
+          Run right after creating{isCode && f.variables.length > 0 && ' (asks for the input values)'}
+        </label>
+      )}
 
       <button type="submit" disabled={busy}>{editing ? 'Save changes' : 'Create task'}</button>
       {error && <p className="error small">{error}</p>}

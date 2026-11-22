@@ -91,3 +91,9 @@ pre.terminal.error { color: var(--bad); }
 .dialog label > span { display: block; margin-bottom: 2px; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 0.85rem; margin: 0; }
 .kv dd { margin: 0; word-break: break-all; }
+.pill.st-ready { background: #3b2f63; }
+tr.ready-row { background: rgba(91, 141, 239, 0.06); }
+tr.ready-row td { border-bottom-style: dashed; }
+.small-btn { padding: 4px 10px; font-size: 0.78rem; }
+.task-filter { width: auto; margin-top: 0; padding: 5px 8px; font-size: 0.8rem; }
+.tab .count { margin-left: 5px; background: var(--accent); color: white; border-radius: 999px; padding: 0 6px; font-size: 0.7rem; }

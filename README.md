@@ -67,6 +67,12 @@ Define **input variables** (name, type, default, required, description). When yo
 values. Recurring runs use the defaults. The task is added to the task list, and every run is a normal job tagged with the task's
 name, so you get history, retries and the DLQ for free.
 
+New tasks also show up in the Dashboard's **Jobs list**:
+- **Run right after creating** (on by default) starts the first run as soon as the task is saved. If the task has input
+  variables, the inputs dialog opens first.
+- A task that has never run appears at the top of the Jobs list as a **ready** row with a ▶ Run button. The **ready** tab
+  lists only those tasks, and the **task filter** shows the runs of a single task.
+
 ![create task](docs/screenshots/tasks.png)
 
 | Run dialog asks for the inputs | Output of the run |

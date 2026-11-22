@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { api } from '../api.js'
 import { usePoll } from '../usePoll.js'
 import JobsTable, { ago } from './JobsTable.jsx'
-import RunTaskDialog from './RunTaskDialog.jsx'
+import { useRunTask } from './RunTaskDialog.jsx'
 import TaskForm from './TaskForm.jsx'
 
 /** First meaningful line of a script (skips blank lines and comments) for the task list. */
@@ -18,7 +18,6 @@ export default function TasksPage({ onSelectJob, selectedJob }) {
   const [editing, setEditing] = useState(null)
   const [viewing, setViewing] = useState(null)
   const [flash, setFlash] = useState(null)
-  const [prompting, setPrompting] = useState(null)  // code task waiting for its input values
   const reload = () => setRefresh((r) => r + 1)
 
   const act = async (fn, ok) => {
@@ -39,13 +38,7 @@ export default function TasksPage({ onSelectJob, selectedJob }) {
     reload()
   }
 
-  const run = (t) => {
-    if (t.handler === 'run_code' && t.default_payload.variables?.length) {
-      setPrompting(t)  // ask for input variables first
-      return
-    }
-    act(async () => started(t, await api.runTask(t.name, {})))
-  }
+  const [run, runDialog] = useRunTask(started, (e) => setFlash({ ok: false, text: e.message }))
 
   const remove = (t) => {
     if (!confirm(`Delete task “${t.name}”? Its past runs stay in the job history.`)) return
@@ -63,7 +56,10 @@ export default function TasksPage({ onSelectJob, selectedJob }) {
         <TaskForm
           editing={editing}
           onCancel={() => setEditing(null)}
-          onSaved={(t) => { setFlash({ ok: true, text: `Saved “${t.name}”` }); setEditing(null); setViewing(t.name); reload() }}
+          onSaved={(t, { runNow } = {}) => {
+            setFlash({ ok: true, text: `Saved “${t.name}”` }); setEditing(null); setViewing(t.name); reload()
+            if (runNow) run(t)  // "Run right after creating"
+          }}
         />
       </div>
 
@@ -137,10 +133,7 @@ export default function TasksPage({ onSelectJob, selectedJob }) {
           )}
         </section>
 
-        {prompting && (
-          <RunTaskDialog task={prompting} onClose={() => setPrompting(null)}
-                         onStarted={(job) => { const t = prompting; setPrompting(null); started(t, job) }} />
-        )}
+        {runDialog}
 
         {viewing && (
           <JobsTable task={viewing} title={`Runs of “${viewing}”`} refreshKey={refresh}

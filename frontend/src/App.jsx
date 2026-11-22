@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { api } from './api.js'
 import { usePoll } from './usePoll.js'
 import JobDetail from './components/JobDetail.jsx'
+import { useRunTask } from './components/RunTaskDialog.jsx'
 import JobsTable from './components/JobsTable.jsx'
 import StatsPanel from './components/StatsPanel.jsx'
 import SubmitForm from './components/SubmitForm.jsx'
@@ -18,6 +19,8 @@ export default function App() {
   const [selected, setSelected] = useState(null)
   const [refreshKey, setRefreshKey] = useState(0)
   const refresh = () => setRefreshKey((k) => k + 1)
+  // Run a never-run task straight from the Dashboard's jobs list, then open the new job.
+  const [runTask, runDialog] = useRunTask((_, job) => { refresh(); setSelected(job.id) }, (e) => alert(e.message))
 
   const go = (p) => { setPage(p); history.replaceState(null, '', p === 'tasks' ? '#tasks' : location.pathname) }
 
@@ -46,12 +49,14 @@ export default function App() {
             <SubmitForm onSubmitted={refresh} />
             <Workers />
           </div>
-          <JobsTable refreshKey={refreshKey} onSelect={setSelected} selected={selected} />
+          <JobsTable refreshKey={refreshKey} onSelect={setSelected} selected={selected}
+                     showReadyTasks onRunTask={runTask} />
         </div>
       ) : (
         <TasksPage onSelectJob={setSelected} selectedJob={selected} />
       )}
 
+      {runDialog}
       {selected && <JobDetail id={selected} onClose={() => setSelected(null)} onChanged={refresh} />}
     </div>
   )
